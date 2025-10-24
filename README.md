@@ -1,4 +1,4 @@
-# FASTAPI
+# Fast API
 To create a virtual environment in windows we use python -m venv environment\_name
 
 To install fast api activate the created environment using:
@@ -469,3 +469,397 @@ async def delete_todo(db:db_dependency, todo_id:int=Path(gt=0)):
 ```
 
 After deleting do a commit so that the transaction is saved into the database.
+
+In order to perform authentication for users so that each user has access to only their todos, for routing we can create a folder called `router` inside this create a python file for authentication. In this python file we have to import `APIRouter`, which lets us route from our main.py file to authentication python file. Then create an object of APIRouter then, like we used in the main file instead of app use the router object. we define a function to handle this request. Then in the main.py file we need to include this router using from `folder_name import file_name
+`Then include the router for the main app object using `.include_router(file_name.route_name)` method.
+the auth file looks like:
+
+```javaScript
+from fastapi import APIRouter
+router = APIRouter()
+@router.get("/auth/")
+async def get_user():
+    return {'user':'authenticated'}
+```
+
+And in the main file:
+
+```javaScript
+from routers import auth
+app = FastAPI()
+app.include_router(auth.router)
+```
+
+By doing the above we can see the endpoint inside the auth.py file in the swagger when we run the main.py file using uvicorn.
+
+Similarly we can create a file to replace our todo logic and utilize the router. so for this we create a separate todos.py file and place all the logic inside that. So the file looks like:
+
+```javaScript
+from fastapi import APIRouter
+from fastapi import Depends, HTTPException, Path
+from pydantic import BaseModel, Field
+from database import LocalSession
+from typing import Annotated
+from sqlalchemy.orm import Session
+import models
+from starlette import status
+router = APIRouter()
+def get_db():
+    db = LocalSession()
+    try:
+        yield db
+    finally:
+        db.close()
+db_dependency = Annotated[Session, Depends(get_db)]
+class TodoRequest(BaseModel):
+    title: str = Field(min_length=3)
+    description: str = Field(min_length=3, max_length=100)
+    priority: int = Field(gt=0, lt=6)
+    complete: bool
+```
+
+```javaScript
+@router.get("/", status_code=status.HTTP_200_OK)
+async def get_all_todos(db: db_dependency):
+    return db.query(models.Todos).all()
+ 
+@router.get("/todo-by-id/{todo_id}", status_code=status.HTTP_200_OK)
+async def get_todo_by_id(
+    db: db_dependency,
+    todo_id: int = Path(gt=0, description="id must be greater than 0"),
+):
+    todo_model = db.query(models.Todos).filter(models.Todos.id == todo_id).first()
+    if todo_model is not None:
+        return todo_model
+    else:
+        raise HTTPException(status_code=404, detail="Todo not found")
+ 
+ 
+@router.post("/todo", status_code=status.HTTP_201_CREATED)
+async def add_todo_item(db: db_dependency, todo: TodoRequest):
+    try:
+        todo_model = models.Todos(**todo.model_dump())
+        db.add(todo_model)
+        db.commit()
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to add todo")
+```
+
+```javaScript
+@router.put("/todo/update/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def update_todo(db: db_dependency, todo: TodoRequest, todo_id: int = Path(gt=0)):
+    current_todo = db.query(models.Todos).filter(models.Todos.id == todo_id).first()
+    if current_todo is None:
+        raise HTTPException(status_code=404, detail="Todo doesnot exist")
+    current_todo.title = todo.title
+    current_todo.description = todo.description
+    current_todo.priority = todo.priority
+    current_todo.complete = todo.complete
+    db.add(current_todo)
+    db.commit()
+ 
+ 
+@router.delete("/todo/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_todo(db: db_dependency, todo_id: int = Path(gt=0)):
+    todo_to_delete = db.query(models.Todos).filter(models.Todos.id == todo_id).first()
+    if todo_to_delete is None:
+        raise HTTPException(status_code=404, detail="Todo not found!")
+    db.query(models.Todos).filter(models.Todos.id == todo_id).delete()
+    db.commit()
+```
+
+Now the main file looks like:
+
+```javaScript
+from fastapi import FastAPI
+from routers import auth, todos
+from database import engine
+import models
+ 
+app = FastAPI()
+app.include_router(auth.router)
+app.include_router(todos.router)
+models.Base.metadata.create_all(bind=engine)
+```
+
+We need to utilize one to many relationships to establish a relationship between user and their todo items. That is one user may have many todos. To establish the relationship, we need to modify the todos table, we need to add an owner column, which is the foreign key for the user table. The id of the user table will become the value (foreign key) in the owner column. By default, fastapi cannot enhance the structure of a table, so for now we will modify the table manually by deleting the database. and running the project again after making the changes.
+
+First let's create a table inside our models.py file for the users:
+
+```javaScript
+class Users(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True)
+    user_name = Column(String, unique=True)
+    first_name = Column(String)
+    last_name = Column(String)
+    hashed_password = Column(String)
+    is_active = Column(Boolean, default=True)
+    role = Column(String)
+```
+
+Then modify the todos table to add the owner. We need to import the ForeignKey class from the sqlalchemy and use the constructor to create a foreign key reference. To this constructor we pass the table\_name.column\_name as a string. i.e:
+`from sqlalchemy import ForeignKey`
+`owner = Column(Integer, ForeignKey("users.id"))`
+
+**NOTE**: The request\_object.model\_dump() will not work if the field name of the model and request object are not identical, in that case we need to manually add the data from the request object to each field.
+
+To encrypt the password and save it to the database we use 2 libraries which are bcrypt and passlib. For both of them to work together we use a specific version of bcrypt which is 4.0.1\. The commands to install them are:
+
+```javaScript
+pip install passlib
+pip install bcrypt==4.0.1
+```
+
+**NOTE**: You should use == when installing a specific version of a package.
+To use this first we need to import CryptoContext from passlib.context. Then create an object of CryptoContext with bcrypt scheme.
+The code will look like:
+
+```javaScript
+from passlib.context import CryptoContext
+bycrypt_context = CryptoContext(schemes=['bcrypt'], deprecated='auto')
+```
+
+to hash the value of password we use `bcrypt_context.hash(password)`
+
+In the controller function:
+
+```javaScript
+create_user_model = Users(
+        email = user.email,
+        user_name = user.username,
+        first_name = user.first_name,
+        last_name = user.last_name,
+        hashed_password = bcrypt_context.hash(user.password),
+        role = user.role,
+        is_active = True
+    )
+```
+
+Here we don't know the bcypt hash used for encrypting the password. Only the encrypted text is stored in the database. When authenticating the user, we accept the user's password and compare it with using bcrypts verify method. If it returns true the user is authenticated. Else the user is not authenticated.
+eg:
+`bcrypt_context.verify(password, user.hashed_password)`
+For every file in the router, we need to add dependency injection code.
+
+After following the previous steps, we need an endpoint to authenticate the user. We are going to user JWT authentication. For this first we need to install `python-multipart` module. We will not be using normal forms. We will be using OAuth2 password request form.
+To utilize this we need to import OAuth2PasswordRequestForm from fastapi. We then need to use dependency injection for the login endpoint.
+
+```javaScript
+from fastapi.security import OAuth2PasswordRequestForm
+@router.post("/token/")
+async def login_for_refresh_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    db:db_dependency):
+        return 'token'
+```
+
+The above shown is a skeleton structure for the api endpoint. This will show a particular form with multiple fields in the swagger. In this form we only need to send the username and password.
+To authenticate the user we can use a helper function, which takes the username and password and authenticate the user. It looks like:
+
+```javaScript
+def authenticate_user(username:str, password:str, db):
+    user = db.query(Users).filter(Users.username == username).first()
+    if not user:
+        return False
+    if not bcrypt_context.verify(password, user.hashed_password):
+        return False
+    return True
+```
+
+We can call this function inside the token generation endpoint using:
+`user = authenticate_user(form_data.username, form_data.password, db)`
+
+**JWT (JSON WEB TOKEN)** is a way to securely transmitting the data between two or more parties using a Json object. Each JWT can be trusted because they can be digitally signed which allows the server to know if the JWT has been changed at all by the client. **JWT is an authentication method.** When the client provides the credentials for login to the server the server returns a text which has the information about the user. By default, the content in the json token is not encryped i.e anyone can read the contents. If we want to make is secure we need to encrypt it. With each request to the server the client sends the JWT token to identify itself to the server, the server verifies this token and determines whether to proceed with the request or not.
+A JWT token has 3 parts separated by . They are:
+
+1\. Header: The header has 2 parts, the algorithm for signing and type of token. The jwt header is encoded into base64 to make the first part of JWT token
+
+
+2\. Payload: The payload consists of data. This data contains claims. There are 3 types of claims.
+
+* Registered: Claims that are predefined, they are recommended but not mandatory. The top 3 registered claims are
+   1. ISS : Issuer, this identified the issuer who issued the JWT
+   2. SUB: Subject, It holds the statements about the subjects. The subject value must be scoped either locally or globally unique. It is like an ID for the json webtoken.
+   3. EXP: Expiration time, this claim makes sure that the current date and time is before the expiration date and time of token. Expiration is not mandatory but useful. One careful thing to note is make the token always expire after certain amount of time. Otherwise, anyone with the token will have access.
+   The payload is also encoded to base64 to create the second part of the JWT.
+* Public
+* Private
+
+3\. Signature: Created by using the algorithm in the header to encode the header and payload with a secret. The secret can be any text that is stored inside of the server.
+
+The JWT signature looks like:
+
+```javaScript
+HMACSHA256(
+  base64UrlEncode(header) + "." + base64UrlEncode(payload),
+  secret
+)
+```
+
+The JSON webtoken string is completely unique to the client that has been authenticated.
+Usually, the authenticated user sends this JWT token in **authorization** header using the **bearer** schema. The JWT is safe as long as the client does not know the secret key. Even though we can easily decode the JWT token and see the data we cannot change it. If we change something in the payload and send it to the server, the server can easily identify that something is changed in the token because when verifying it will not be able to pass the integrity check.
+
+**NOTE**: Two separate servers can authenticate the same user with the same JWT token if they use the same secret key and algorithm
+JWT's are popular in modern microservices arhitecture.
+
+To generate JWT token we need to first install a python package which is "python-jose\[cryptography\]". The command is :
+`pip install "python-jose[cryprography]"`
+Then import the jwt from jose module. Then we need to set a secret and an algorithm. To create a random hex 32 bit string we can use the openssl command line tool. If we are using windows package managers like scoop or chocolatey we can directly install with the `scoop install openssl `
+
+command. The command to generate secret key is :
+
+`openssl rand -hex 32`
+
+After generating the key set the returned value to a string. The next step is to specify the algorithm. We use **HS256** commonly for generating the jwt token. The secret and the algorithm will work together to have a unique signature to make sure that JWT is secured and authorized. After this we can create a helper function to accept the username, userid and a time delta which sets the expiration of the token. We then encode this information using the secret key and algorithm.
+
+The helper function looks like:
+
+```javaScript
+from datetime import timedelta, datetime, timezone
+from jose import jwt
+ 
+SECRET_KEY = 'my_random_secret_key'
+ALGORITHM = 'HS256'
+def create_access_token(username:str, user_id:int, expires_delta:timedelta):
+    encode = {'sub':username, 'id:user_id'}
+    expires = datetime.now(timezone.utc) + expires_delta
+    encode.update({'exp':expires})
+    return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
+```
+
+We can call this function in our authentication endpoint to generate the token and return this token to the client.
+
+`return create_access_token(username=user.user_name, user_id=user.id, expires_delta=timedelta(minutes=20))` .
+Our current token endpoint looks like:
+
+```javaScript
+class Token(BaseModel):
+    access_token:str
+    token_type:str
+ 
+@router.post("/token/", response_model=Token)
+async def login_for_refresh_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    db:db_dependency):
+        user = authenticate_user(form_data.username, form_data.password, db)
+        if not user:
+            return 'Failed to authenticate user'
+        token_str = create_access_token(username=user.user_name, user_id=user.id, expires_delta=timedelta(minutes=20))
+        return{
+            "access_token":token_str,
+            "token_type":"bearer"
+        }
+```
+
+Here we created a response model for sending the jwt token to the client, we can set a response model in the routing annotation using the **response\_model** parameter.
+
+jwt.io is a website which lets us see the information in the jwt token. We can paste the jwt token and see the details of the token.
+
+Decoding a jwt is the only way to authenticate a jwt. When the user logs in we create send a jwt token with the user id. Then for each endpoint which requires authentication we pass the jwt token. This jwt token is decoded to authenticate the user. To enable jwt decoding we first need to import `OAuth2PasswordBearer `from fastapi.security module. We then need to pass the token url to this constructor. We then define a utility function for other api endpoints to verify the user. The function will have 2 arguments, the bearer token which is an Annotated type of string and depends upon the oauth bearer object. Then inside the function body we extract the payload by using the jwt.decode() method. To this method we pass token, secret key and the algorithms (as a list) as argument. From this payload we extract the subject which is in sub key, and the user id in the id key.
+
+We also can JWTError when there are exceptions in decoding the JWT. For this import JWTError from jose. The utility function now looks like:
+
+```javaScript
+async def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_name:str = payload.get('sub')
+        user_id:int = payload.get('id')
+        if user_id is None or user_name is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Unauthorized')
+        return {"username":user_name, "id":user_id}
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Unauthorized')
+```
+
+We can add prefix and tag for the api files so that we can distinctly identify them. For this we need to pass the prefix and tag parameter to the APIRouter() constructor. eg:
+
+```javaScript
+router = APIRouter(
+    prefix='/auth',
+    tags=['auth']
+)
+```
+
+After we make this change, we can remove the auth from the api route for the auth requests. Also, we need to change the token url in:
+`oauth2_bearer = OAuth2PasswordBearer(tokenUrl="auth/token")`
+
+We can use the` get_current_user()` function defined in our auth.py file to authenticate user with jwt. Then we need to inject the dependency to our to-do routes.
+`user_dependency = Annotated[dict, Depends(get_current_user)]
+`The create todo function looks like:
+
+```javaScript
+@router.post("/todo", status_code=status.HTTP_201_CREATED)
+async def add_todo_item(user:user_dependency, db: db_dependency, todo: TodoRequest):
+    if user is None:
+        raise HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = 'Authentication failed')
+    try:
+        todo_model = models.Todos(**todo.model_dump(), owner_id = user.get('id'))
+        db.add(todo_model)
+        db.commit()
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to add todo")
+```
+
+
+We can similarly add this to all the todo routes. Now the get all todos will look like:
+
+```javaScript
+@router.get("/", status_code=status.HTTP_200_OK)
+async def get_all_todos(user: user_dependency,db: db_dependency):
+     if user is None:
+          raise HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = 'Authentication failed')
+    return db.query(models.Todos).filter(models.Todos.owner_id == user.get('id')).all()
+```
+
+We can chain multiple filters together. eg: ` todo_model = db.query(models.Todos).filter(models.Todos.id == todo_id).filter(models.Todos.owner_id == user.get('id')).first()`
+
+The updated get todo by id function looks like:
+
+```javaScript
+@router.get("/todo-by-id/{todo_id}", status_code=status.HTTP_200_OK)
+async def get_todo_by_id(
+    user: user_dependency,
+    db: db_dependency,
+    todo_id: int = Path(gt=0, description="id must be greater than 0"),
+):
+    if user is None:
+        raise HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = 'Authentication failed')
+    todo_model = db.query(models.Todos).filter(models.Todos.id == todo_id).filter(models.Todos.owner_id == user.get('id')).first()
+    if todo_model is not None:
+        return todo_model
+    else:
+        raise HTTPException(status_code=404, detail="Todo not found")
+```
+
+Now the update todo mehtod looks like:
+
+
+```javaScript
+@router.put("/todo/update/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def update_todo(user: user_dependency,db: db_dependency, todo: TodoRequest, todo_id: int = Path(gt=0)):
+    if user is None:
+        raise HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = 'Authentication failed')
+    current_todo = db.query(models.Todos).filter(models.Todos.id == todo_id).filter(models.Todos.owner_id == user.get('id')).first()
+    if current_todo is None:
+        raise HTTPException(status_code=404, detail="Todo doesnot exist")
+    current_todo.title = todo.title
+    current_todo.description = todo.description
+    current_todo.priority = todo.priority
+    current_todo.complete = todo.complete
+    db.add(current_todo)
+    db.commit()
+```
+
+The delete method will now look like:
+
+```javaScript
+@router.delete("/todo/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_todo(user:user_dependency, db: db_dependency, todo_id: int = Path(gt=0)):
+    if user is None:
+        raise HTTPException(status_code = status.HTTP_401_UNAUTHORIZED, detail = 'Authentication failed')
+    todo_to_delete = db.query(models.Todos).filter(models.Todos.id == todo_id).filter(models.Todos.owner_id == user.get('id')).first()
+    if todo_to_delete is None:
+        raise HTTPException(status_code=404, detail="Todo not found!")
+    db.query(models.Todos).filter(models.Todos.id == todo_id).delete()
+    db.commit()
+```

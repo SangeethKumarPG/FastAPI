@@ -863,3 +863,227 @@ async def delete_todo(user:user_dependency, db: db_dependency, todo_id: int = Pa
     db.query(models.Todos).filter(models.Todos.id == todo_id).delete()
     db.commit()
 ```
+
+To identify the admin from other users we can also encode the role of the user with jwt. We also need to get the user role when decoding the jwt token. Then we can create a separate router for admin. In this we can provide an endpoint to get all the todos and delete a tpdo of any user based on the todo id. The admin router will look like:
+
+```javaScript
+from sys import prefix
+from fastapi import APIRouter
+from fastapi import Depends, HTTPException, Path
+from pydantic import BaseModel, Field
+from database import LocalSession
+from typing import Annotated
+from sqlalchemy.orm import Session
+import models
+from starlette import status
+from .auth import get_current_user
+ 
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"]
+)
+ 
+ 
+def get_db():
+    db = LocalSession()
+    try:
+        yield db
+    finally:
+        db.close()
+ 
+ 
+db_dependency = Annotated[Session, Depends(get_db)]
+user_dependency = Annotated[dict, Depends(get_current_user)]
+ 
+@router.get("/todo", status_code=status.HTTP_200_OK)
+async def read_all(user:user_dependency, db:db_dependency):
+    if user is None or user.get('role')!='admin':
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Not authorized')
+    return db.query(models.Todos).all()
+```
+
+```javaScript
+
+@router.delete("/todo/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_todo(user:user_dependency, db:db_dependency, todo_id:int = Path(gt=0)):
+    if user is None or user.get('role') != 'admin':
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='not authorized')
+    todo_model = db.query(models.Todos).filter(models.Todos.id == todo_id).first()
+    if todo_model is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Todo not found')
+    db.query(models.Todos).filter(models.Todos.id == todo_id).delete()
+    db.commit()
+```
+
+Similarly, we can create a router to handle the users. The user route will look like:
+
+```javaScript
+from posixpath import curdir
+from fastapi import APIRouter
+from fastapi import Depends, HTTPException, Path
+from pydantic import BaseModel, Field
+from database import LocalSession
+from typing import Annotated
+from sqlalchemy.orm import Session
+import models
+from starlette import status
+from .auth import bcrypt_context, get_current_user
+ 
+router = APIRouter(
+    prefix="/users",
+    tags=["Users"],
+)
+ 
+def get_db():
+    db = LocalSession()
+    try:
+        yield db
+    finally:
+        db.close()
+ 
+class ChangePassword(BaseModel):
+    old_password: str = Field(min_length=8, max_length=36)
+    new_password: str = Field(min_length=8, max_length=36)
+ 
+db_dependency = Annotated[Session, Depends(get_db)]
+user_dependency = Annotated[dict, Depends(get_current_user)]
+ 
+```
+
+```javaScript
+@router.get("/me/", status_code=status.HTTP_200_OK)
+async def get_my_information(user: user_dependency, db:db_dependency):
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    current_user = db.query(models.Users).filter(models.Users.id == user.get("id")).first()
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return current_user
+
+```
+
+```javaScript
+@router.put("/change_password/", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(user:user_dependency, db:db_dependency, password_change: ChangePassword):
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    current_user = db.query(models.Users).filter(models.Users.id == user.get("id")).first()
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not bcrypt_context.verify(password_change.old_password, current_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    current_user.hashed_password = bcrypt_context.hash(password_change.new_password)
+    db.add(current_user)
+    db.commit()
+```
+
+SQLite is suitable for individual devices where only local storage of data is needed. It is a simple, economical and efficient database for these purposes. For small and medium size applications, it works well. MySQL and Postgres SQL are commonly used production databases. They focus on concepts such as scalability, concurrency and control. They are only suitable where you have thousands of users. If your application has a limited number of users, you can choose SQLite. If it is beginning to scale you can always easily to switch to a production database such as Postgres or MySQL. SQLite is a file-based database, which means that the entire database is stored as a file along with the code. For production databases they have a dedicated server and port, you need to make sure that the database is running, and you have authentication linking to the DBMS. For production databases separate deployment is required for the DBMS.
+
+PostgreSQL is a production ready open-source relational database management system. It is secure, scalable and requires a server.
+
+After installing PostgreSQL, we need to open pgadmin and login with the password you set during the installation. Then register a new server by right clicking on the servers tab. You will be shown an option to configure the server by setting the name and choosing the server group. There is a default servers' group which we can choose for now. Then navigate to the connection tab and choose a hostname which is localhost. Then choose a username and password. The default username is Postgres. The server group will store databases, login and group roles. The first thing we need to check after creating a server is check if you have a superuser in the login and group roles. You can view the privileges of the super user by right-clicking on the super user and clicking on the properties. The super user will have complete privileges in the database.
+
+If you want, you can create a new user or role by right clicking on the login/group roles tab and clicking on create, then we can set up the details of a new user and configure the privileges. To create a database, we can right click on the database and set a database name and owner. By default, when you create a database, you are automatically connected to the database, if you are not connected you can right click on the database and click on the connect option.
+
+After creating the database under schemas, we can see the tables in the database. We need to create the tables inside of this. Alternatively, we can the query tool by clicking on the database icon beside the filter icon in the object explorer tab or user the keyboard shortcut of `alt+shift+q` . This will also open a query editor where you can run the SQL queries to do all kinds of operations in the database.
+
+We can use the below queries to create tables.
+
+```javaScript
+DROP TABLE IF EXISTS todos;
+ 
+CREATE TABLE users (
+id SERIAL,
+email VARCHAR(200) DEFAULT NULL,
+user_name VARCHAR(45) DEFAULT NULL,
+first_name VARCHAR(45) DEFAULT NULL,
+last_name VARCHAR(45) DEFAULT NULL,
+hashed_password VARCHAR(200) DEFAULT NULL,
+is_active boolean DEFAULT NULL,
+role VARCHAR(45) DEFAULT NULL,
+PRIMARY KEY(id)
+);
+ 
+DROP TABLE IF EXISTS todos;
+CREATE TABLE todos(
+id SERIAL,
+title VARCHAR(200) DEFAULT NULL,
+description VARCHAR(200) DEFAULT NULL,
+priority INTEGER DEFAULT NULL,
+complete boolean DEFAULT NULL,
+owner_id INTEGER DEFAULT NULL,
+PRIMARY KEY(id),
+FOREIGN KEY(owner_id) REFERENCES users(id)
+);
+```
+
+The SERIAL type in Postgres is an integer type that auto increments. VARCHAR datatype is similar to varchars in other databases; it says that we are storing a string of fixed length in this.
+
+To connect our fast Api application with the Postgres database we need to install a python package. We can install that using:
+
+`pip install psycopg2-binary`
+Then in our database.py file we need to change the database URL. The format for creating the URL is:
+
+`postgres://username:password@hostname/database_name`
+Our connection string looks like:
+
+`postgres://postgres:admin%401234@localhost/TodoApplicationDatabase`
+
+For postgres we don't need to specify the connect\_args paramaters when creating the engine.
+**NOTE: If your password has @ characters you need to user %40 instead.**
+
+**NOTE: The default port of Postgres is 5432**
+
+MySQL is an opensource data management system, it requires a server. It is a production ready database.
+
+To install MySQL on windows we need to download the mysql community installer. You can install the 32-bit installer which is available even if your system is 64 bits. After opening the installer choose the full installtation. Follow the steps in the installation screen. You will be asked to choose the server configuration such as port number once all the dependent packages are installed. You can leave it to default. Then you will be asked to setup a password. Set up an admin user with role as DBAdmin and set the password.
+
+After installation of MySQL you can start up the MySQL workbench and login using the credentials, you have configured during the setup. Then to create a database/schema on the left side tab click on the schemas tab and right click to create a new schema, by default MySQL allows only small case letters in the schema name, so create a name for the schema and click on apply.
+
+```javaScript
+use todoapplicationdatabase;
+DROP TABLE IF EXISTS `users`;
+ 
+CREATE TABLE `users` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `email` varchar(200) DEFAULT NULL,
+  `user_name` varchar(45) DEFAULT NULL,
+  `first_name` varchar(45) DEFAULT NULL,
+  `last_name` varchar(45) DEFAULT NULL,
+  `hashed_password` varchar(200) DEFAULT NULL,
+  `is_active` int(1) DEFAULT NULL,
+  `role` varchar(45) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;
+ 
+DROP TABLE IF EXISTS `todos`;
+ 
+CREATE TABLE `todos` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `title` varchar(200) DEFAULT NULL,
+  `description` varchar(200) DEFAULT NULL,
+  `priority` int(1) DEFAULT NULL,
+  `complete` int(1) DEFAULT NULL,
+  `owner_id` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  FOREIGN KEY (`owner_id`) REFERENCES users(`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=latin1;
+```
+
+Use the above script in the query tab and execute it to create tables for our application.
+
+You can also use the GUI to create tables which will give the above scripts.
+
+To connect our fast api application with the MySQL database we need to use a package called `pymysql` . To install this, we can use `pip install pymysql` . The connection string for the database is:
+
+`mysql+pymysql://user:password@hostname:port_number/database_name`
+
+So, the connection string will look like:
+
+```javaScript
+MYSQL_URL =(
+    "mysql+pymysql://root:admin1234@127.0.0.1:3306/todoapplicationdatabase"
+)
+```
+
+and change the url of the database inside the create\_engine function like we did for Postgres.

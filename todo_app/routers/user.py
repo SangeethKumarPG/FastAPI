@@ -25,6 +25,10 @@ class ChangePassword(BaseModel):
     old_password: str = Field(min_length=8, max_length=36)
     new_password: str = Field(min_length=8, max_length=36)
 
+
+class UpdatePhoneNumberRequest(BaseModel):
+    phone_number: str
+
 db_dependency = Annotated[Session, Depends(get_db)]
 user_dependency = Annotated[dict, Depends(get_current_user)]
 
@@ -50,3 +54,14 @@ async def change_password(user:user_dependency, db:db_dependency, password_chang
     db.add(current_user)
     db.commit()
     
+    
+@router.put("/update_phone_number", status_code = status.HTTP_204_NO_CONTENT)
+async def update_phone_number(user:user_dependency, db: db_dependency, phone_number:UpdatePhoneNumberRequest):
+    current_user = db.query(models.Users).filter(models.Users.id == user.get("id")).first()
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if current_user.phone_number == phone_number.phone_number:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number already exists")
+    current_user.phone_number = phone_number.phone_number
+    db.add(current_user)
+    db.commit()

@@ -10,6 +10,8 @@ from starlette import status
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import jwt, JWTError
 
+
+
 SECRET_KEY = '6bbcc4d4f914e41066d264ec59e8eb4665776127796fa772023d46741a049251'
 ALGORITHM = 'HS256'
 oauth2_bearer = OAuth2PasswordBearer(tokenUrl="auth/token/")
@@ -36,10 +38,12 @@ class CreateUserRequest(BaseModel):
     last_name: str
     password: str
     role: str
+    phone_number: str
     
 class Token(BaseModel):
     access_token:str
     token_type:str
+
 
 def authenticate_user(username:str, password:str, db):
     user = db.query(Users).filter(Users.user_name == username).first()
@@ -78,7 +82,8 @@ async def create_user(user: CreateUserRequest, db:db_dependency):
         last_name = user.last_name,
         hashed_password = bcrypt_context.hash(user.password),
         role = user.role,
-        is_active = True
+        is_active = True,
+        phone_number = user.phone_number,
     )
     db.add(create_user_model)
     db.commit()
